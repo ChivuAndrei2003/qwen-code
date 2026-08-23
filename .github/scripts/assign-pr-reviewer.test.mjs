@@ -70,21 +70,45 @@ describe('assign-pr-reviewer: owner map paths', () => {
     empty.areas[0].paths = [];
     assert.throws(
       () => loadPolicy(JSON.stringify(empty)),
-      /paths must be non-empty strings/,
+      /paths must be repo-root-relative directory prefixes/,
     );
 
     const blank = JSON.parse(ownersRaw);
     blank.areas[0].paths = ['packages/core/', ''];
     assert.throws(
       () => loadPolicy(JSON.stringify(blank)),
-      /paths must be non-empty strings/,
+      /paths must be repo-root-relative directory prefixes/,
     );
 
     const notStrings = JSON.parse(ownersRaw);
     notStrings.areas[0].paths = [42];
     assert.throws(
       () => loadPolicy(JSON.stringify(notStrings)),
-      /paths must be non-empty strings/,
+      /paths must be repo-root-relative directory prefixes/,
+    );
+  });
+
+  it('rejects a prefix without a trailing slash that would leak into siblings', () => {
+    // matchAreaByPath uses startsWith, so "packages/cli" would also match
+    // packages/cli-extras/file.ts and misroute a sibling directory's PRs;
+    // require the directory boundary instead of trusting the entry's shape.
+    const loose = JSON.parse(ownersRaw);
+    loose.areas[0].paths = ['packages/cli'];
+    assert.throws(
+      () => loadPolicy(JSON.stringify(loose)),
+      /paths must be repo-root-relative directory prefixes/,
+    );
+  });
+
+  it('rejects a leading-slash prefix that can never match', () => {
+    // Changed-file paths come back repo-root-relative with no leading slash,
+    // so the CODEOWNERS spelling "/packages/core/" would silently and
+    // permanently unroute the area.
+    const anchored = JSON.parse(ownersRaw);
+    anchored.areas[0].paths = ['/packages/core/'];
+    assert.throws(
+      () => loadPolicy(JSON.stringify(anchored)),
+      /paths must be repo-root-relative directory prefixes/,
     );
   });
 

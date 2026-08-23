@@ -59,15 +59,22 @@ export function loadPolicy(raw) {
     }
     // paths is optional: issue assignment matches on labels only, while
     // assign-pr-reviewer.mjs matches PR diffs against it. An area without
-    // paths simply never participates in PR reviewer routing.
+    // paths simply never participates in PR reviewer routing. Entries must be
+    // directory prefixes ending in '/': matchAreaByPath uses startsWith, so a
+    // missing trailing slash leaks into sibling directories ("packages/cli"
+    // would match "packages/cli-extras/..."), and a leading slash can never
+    // match the repo-root-relative API paths, silently unrouting the area.
     if (
       area.paths !== undefined &&
       (!isStringArray(area.paths) ||
         area.paths.length === 0 ||
-        area.paths.some((path) => path.length === 0))
+        area.paths.some(
+          (path) =>
+            path.length === 0 || path.startsWith('/') || !path.endsWith('/'),
+        ))
     ) {
       throw new Error(
-        `${OWNERS_FILE}: area ${area.name} paths must be non-empty strings`,
+        `${OWNERS_FILE}: area ${area.name} paths must be repo-root-relative directory prefixes ending in /`,
       );
     }
     if (!Array.isArray(area.owners) || area.owners.length === 0) {
