@@ -490,6 +490,7 @@ describe('assign-pr-reviewer: workflow invariants', () => {
     assert.deepEqual(doc.on.pull_request.types, [
       'opened',
       'synchronize',
+      'reopened',
       'ready_for_review',
     ]);
     assert.equal(
