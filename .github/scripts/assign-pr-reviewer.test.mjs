@@ -544,6 +544,14 @@ describe('assign-pr-reviewer: workflow invariants', () => {
     assert.equal(checkoutStep.with['persist-credentials'], false);
   });
 
+  it('defaults manual dispatches to report-only', () => {
+    // The DRY_RUN step env consumes inputs.dry_run; if the input definition
+    // flips or disappears, `inputs.dry_run || 'false'` collapses to 'false'
+    // and a report-only manual dispatch performs a real reviewer request.
+    assert.equal(requestStep.env.DRY_RUN, "${{ inputs.dry_run || 'false' }}");
+    assert.equal(doc.on.workflow_dispatch.inputs.dry_run.default, true);
+  });
+
   it('never runs a model or reads PR text', () => {
     const serialized = JSON.stringify(doc);
     assert.doesNotMatch(
