@@ -103,8 +103,24 @@ function canWrite(repository, login) {
   }
 }
 
+// `gh pr view --json files` caps at 100 entries and exposes no pagination
+// cursor, so a large PR's area match would silently run on a truncated list;
+// the REST files endpoint pages through every changed file instead.
+function changedFiles(repository, prNumber) {
+  return gh([
+    'api',
+    `repos/${repository}/pulls/${prNumber}/files`,
+    '--paginate',
+    '--jq',
+    '.[].filename',
+  ])
+    .split('\n')
+    .filter(Boolean)
+    .map((filename) => ({ path: filename }));
+}
+
 function viewPr(repository, prNumber) {
-  return JSON.parse(
+  const pr = JSON.parse(
     gh([
       'pr',
       'view',
@@ -112,9 +128,11 @@ function viewPr(repository, prNumber) {
       '--repo',
       repository,
       '--json',
-      'state,isDraft,author,files,reviewRequests,latestReviews',
+      'state,isDraft,author,reviewRequests,latestReviews',
     ]),
   );
+  pr.files = changedFiles(repository, prNumber);
+  return pr;
 }
 
 function main() {

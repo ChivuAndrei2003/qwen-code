@@ -190,8 +190,11 @@ describe('assign-pr-reviewer: idempotency', () => {
 });
 
 // The stub reports wenshao as the least loaded owner so the pick is
-// unambiguous regardless of the rotation offset for PR 77.
-function runRequest(dryRun, secondPrJson = '') {
+// unambiguous regardless of the rotation offset for PR 77. Changed files come
+// from the paginated REST files endpoint, not from `pr view`, so the stub
+// serves them separately and can vary them between the two reads.
+function runRequest(dryRun, options = {}) {
+  const { firstPrJson = '', secondPrJson = '', secondFiles = '' } = options;
   const dir = mkdtempSync(join(tmpdir(), 'assign-pr-reviewer-'));
   tempDirs.push(dir);
   const log = join(dir, 'gh.log');
@@ -207,8 +210,20 @@ case "$*" in
     printf '%s' "$count" > "$GH_STUB_VIEW_COUNT"
     if [ "$count" = 2 ] && [ -n "$GH_STUB_SECOND_PR" ]; then
       printf '%s' "$GH_STUB_SECOND_PR"
+    elif [ -n "$GH_STUB_FIRST_PR" ]; then
+      printf '%s' "$GH_STUB_FIRST_PR"
     else
-      printf '%s' '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"files":[{"path":"packages/core/src/foo.ts"}],"reviewRequests":[],"latestReviews":[]}'
+      printf '%s' '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"reviewRequests":[],"latestReviews":[]}'
+    fi
+    ;;
+  *"pulls/77/files"*)
+    fcount=$(cat "$GH_STUB_FILES_COUNT" 2>/dev/null || echo 0)
+    fcount=$((fcount + 1))
+    printf '%s' "$fcount" > "$GH_STUB_FILES_COUNT"
+    if [ "$fcount" = 2 ] && [ -n "$GH_STUB_SECOND_FILES" ]; then
+      printf '%s' "$GH_STUB_SECOND_FILES"
+    else
+      printf '%s' 'packages/core/src/foo.ts'
     fi
     ;;
   *"/collaborators/"*"/permission"*) printf '%s' 'write' ;;
@@ -226,7 +241,10 @@ esac
       PATH: `${dir}:${process.env.PATH}`,
       GH_STUB_LOG: log,
       GH_STUB_VIEW_COUNT: join(dir, 'view-count'),
+      GH_STUB_FILES_COUNT: join(dir, 'files-count'),
+      GH_STUB_FIRST_PR: firstPrJson,
       GH_STUB_SECOND_PR: secondPrJson,
+      GH_STUB_SECOND_FILES: secondFiles,
       GITHUB_REPOSITORY: 'QwenLM/qwen-code',
       GITHUB_STEP_SUMMARY: '',
       PR_NUMBER: '77',
@@ -238,6 +256,17 @@ esac
 }
 
 describe('assign-pr-reviewer: apply boundary', () => {
+  it('sources the changed-file list from the paginated files endpoint', () => {
+    // `gh pr view --json files` silently caps at 100 entries, so the routing
+    // must read the REST endpoint that follows pagination instead.
+    const { log } = runRequest(false);
+    assert.match(
+      log,
+      /api repos\/QwenLM\/qwen-code\/pulls\/77\/files --paginate/,
+    );
+    assert.doesNotMatch(log, /--json [^\n]*files/);
+  });
+
   it('verifies push access before requesting', () => {
     const { log } = runRequest(false);
     assert.match(log, /collaborators\/wenshao\/permission/);
@@ -256,19 +285,18 @@ describe('assign-pr-reviewer: apply boundary', () => {
   });
 
   it('re-checks coverage immediately before requesting', () => {
-    const { log, stdout } = runRequest(
-      false,
-      '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"files":[{"path":"packages/core/src/foo.ts"}],"reviewRequests":[{"login":"wenshao"}],"latestReviews":[]}',
-    );
+    const { log, stdout } = runRequest(false, {
+      secondPrJson:
+        '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"reviewRequests":[{"login":"wenshao"}],"latestReviews":[]}',
+    });
     assert.doesNotMatch(log, /pr edit/);
     assert.match(stdout, /already reviewing/);
   });
 
   it('re-checks the diff immediately before requesting', () => {
-    const { log, stdout } = runRequest(
-      false,
-      '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"files":[{"path":"packages/cli/src/index.ts"}],"reviewRequests":[],"latestReviews":[]}',
-    );
+    const { log, stdout } = runRequest(false, {
+      secondFiles: 'packages/cli/src/index.ts',
+    });
     assert.doesNotMatch(log, /pr edit/);
     assert.match(stdout, /PR files changed/);
   });
