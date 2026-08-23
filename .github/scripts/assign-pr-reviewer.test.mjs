@@ -405,6 +405,28 @@ describe('assign-pr-reviewer: apply boundary', () => {
     );
   });
 
+  it('never requests the PR author to review their own work', () => {
+    // The live shape: a maintainer who is a mapped core owner opens a
+    // packages/core/ PR. zeroLoadOwner=DennisYu07 makes the author the
+    // would-be pick, so the assertion proves the exclusion filter dropped
+    // them rather than lucky rotation.
+    const maintainerAuthor = JSON.stringify({
+      state: 'OPEN',
+      isDraft: false,
+      author: { login: 'DennisYu07' },
+      reviewRequests: [],
+      latestReviews: [],
+    });
+    const { log, stdout } = runRequest(false, {
+      firstPrJson: maintainerAuthor,
+      secondPrJson: maintainerAuthor,
+      zeroLoadOwner: 'DennisYu07',
+    });
+    assert.match(log, /pr edit 77 .*--add-reviewer BenGuanRan/);
+    assert.match(stdout, /requested @BenGuanRan/);
+    assert.doesNotMatch(log, /--add-reviewer DennisYu07\b/);
+  });
+
   it('re-checks coverage immediately before requesting', () => {
     const { log, stdout } = runRequest(false, {
       secondPrJson:
