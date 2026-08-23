@@ -270,6 +270,26 @@ describe('assign-pr-reviewer: idempotency', () => {
     );
   });
 
+  it('matches requested reviewers against the map case-insensitively', () => {
+    // The checked-in map spells the owner LaZzyMan; a pending request in any
+    // casing must count as coverage, or the routing stacks a second request
+    // on another owner and breaks the one-request-per-PR guarantee.
+    assert.equal(
+      alreadyCovered(policy, {
+        ...corePr,
+        reviewRequests: [{ login: 'lazzyman' }],
+      }),
+      true,
+    );
+    assert.equal(
+      alreadyCovered(policy, {
+        ...corePr,
+        reviewRequests: [{ login: 'LaZzyMan' }],
+      }),
+      true,
+    );
+  });
+
   it('treats a submitted review by any other mapped owner as covered', () => {
     const owner = policy.areas[0].owners.find(
       (login) => !coreCodeOwners.has(login.toLowerCase()),
