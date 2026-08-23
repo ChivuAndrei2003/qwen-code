@@ -300,6 +300,9 @@ describe('assign-pr-reviewer: workflow invariants', () => {
     assert.deepEqual(doc.permissions, { contents: 'read' });
     assert.deepEqual(requestJob.permissions, {
       contents: 'read',
+      // issues:read — openIssueCount() lists issues for every eligible owner
+      // before any write, and the Issues API 403s without the scope.
+      issues: 'read',
       'pull-requests': 'write',
     });
   });
