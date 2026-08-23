@@ -57,6 +57,19 @@ export function loadPolicy(raw) {
     ) {
       throw new Error(`${OWNERS_FILE}: area ${area.name} needs labels`);
     }
+    // paths is optional: issue assignment matches on labels only, while
+    // assign-pr-reviewer.mjs matches PR diffs against it. An area without
+    // paths simply never participates in PR reviewer routing.
+    if (
+      area.paths !== undefined &&
+      (!isStringArray(area.paths) ||
+        area.paths.length === 0 ||
+        area.paths.some((path) => path.length === 0))
+    ) {
+      throw new Error(
+        `${OWNERS_FILE}: area ${area.name} paths must be non-empty strings`,
+      );
+    }
     if (!Array.isArray(area.owners) || area.owners.length === 0) {
       throw new Error(`${OWNERS_FILE}: area ${area.name} needs owners`);
     }
@@ -151,7 +164,7 @@ function canWrite(repository, login) {
   }
 }
 
-function openIssueCount(repository, login) {
+export function openIssueCount(repository, login) {
   return Number(
     gh([
       'issue',
