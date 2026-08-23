@@ -8,9 +8,11 @@
 // list of each area in .github/issue-owners.json (first area wins, same
 // precedence as labels); the reviewer is the area's least loaded eligible
 // owner, rotated by PR number on ties. Push access is re-verified against the
-// live collaborator API before every write, and at most one owner is ever
-// requested per PR — if any owner in the map is already a requested reviewer
-// or has submitted a review, the script no-ops.
+// live collaborator API before every write, and this routing adds at most one
+// request per PR ON TOP of the automatic CODEOWNERS requests: owners that
+// CODEOWNERS already requests for the changed paths are excluded from
+// consideration entirely, and if any remaining mapped owner is already a
+// requested reviewer or has submitted a review, the script no-ops.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -22,8 +24,12 @@ import {
 } from './assign-issue-owner.mjs';
 
 const OWNERS_FILE = '.github/issue-owners.json';
+const CODEOWNERS_FILE = '.github/CODEOWNERS';
 const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
 const BOT_LOGIN = /(\[bot\]|-bot)$/;
+// Only plain @logins can equal a mapped owner; teams (@org/team) and email
+// owners are dropped because they can never be requested by login here.
+const CODEOWNER_LOGIN = /^@([A-Za-z0-9-]+)$/;
 
 // Returns a human-readable reason to skip, or null to proceed. Ordered so the
 // most informative reason wins when several apply.
@@ -53,15 +59,92 @@ export function allOwners(policy) {
   return policy.areas.flatMap((area) => area.owners);
 }
 
-// A requested reviewer or a submitted review by any mapped owner means the
-// routing already happened; never stack a second request.
-export function alreadyCovered(policy, pr) {
-  const pool = new Set(allOwners(policy).map((login) => login.toLowerCase()));
+// A requested reviewer or a submitted review by any mapped owner means this
+// routing already happened; never stack a second request. Owners in
+// `codeOwners` (lowercase) were requested by GitHub's automatic CODEOWNERS
+// handling, not by this routing, so they never count as coverage.
+export function alreadyCovered(policy, pr, codeOwners = new Set()) {
+  const pool = new Set(
+    allOwners(policy)
+      .map((login) => login.toLowerCase())
+      .filter((login) => !codeOwners.has(login)),
+  );
   const involved = [
     ...pr.reviewRequests.map((request) => request.login),
     ...pr.latestReviews.map((review) => review.author?.login),
   ];
   return involved.some((login) => login && pool.has(login.toLowerCase()));
+}
+
+// Translate one CODEOWNERS pattern to a regex, following the gitignore-style
+// rules GitHub documents: a leading or interior slash anchors the pattern to
+// the repo root, `*` never crosses a directory separator while `**` does,
+// and a pattern covers the matched path plus everything below it.
+function codeownersPatternRegex(pattern) {
+  let body = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+  let anchored = body.startsWith('/');
+  if (anchored) body = body.slice(1);
+  if (body.includes('/')) anchored = true;
+  let translated = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const char = body[i];
+    if (char === '*') {
+      if (body[i + 1] === '*') {
+        translated += '.*';
+        i += 1;
+      } else {
+        translated += '[^/]*';
+      }
+    } else if (char === '?') {
+      translated += '[^/]';
+    } else if ('\\^$.|+()[]{}'.includes(char)) {
+      translated += `\\${char}`;
+    } else {
+      translated += char;
+    }
+  }
+  return new RegExp(`${anchored ? '^' : '^(?:.*/)?'}${translated}(?:/.*)?$`);
+}
+
+// Parses a CODEOWNERS file into ordered { regex, logins } rules; comments
+// and blank lines are dropped.
+export function parseCodeowners(text) {
+  const rules = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const [pattern, ...owners] = line.split(/\s+/);
+    const logins = [];
+    for (const owner of owners) {
+      const match = CODEOWNER_LOGIN.exec(owner);
+      if (match) logins.push(match[1].toLowerCase());
+    }
+    rules.push({ regex: codeownersPatternRegex(pattern), logins });
+  }
+  return rules;
+}
+
+// GitHub applies the LAST matching rule per file, so later entries override
+// earlier ones; returns the lowercase logins owning any changed file.
+export function codeownersForFiles(rules, files) {
+  const owners = new Set();
+  for (const file of files) {
+    let matched = null;
+    for (const rule of rules) {
+      if (rule.regex.test(file.path)) matched = rule;
+    }
+    for (const login of matched?.logins ?? []) owners.add(login);
+  }
+  return owners;
+}
+
+function loadCodeownersRules() {
+  try {
+    return parseCodeowners(readFileSync(CODEOWNERS_FILE, 'utf8'));
+  } catch {
+    // No CODEOWNERS means no automatic requests to exclude.
+    return [];
+  }
 }
 
 function gh(args) {
@@ -147,6 +230,7 @@ function main() {
   }
 
   const policy = loadPolicy(readFileSync(OWNERS_FILE, 'utf8'));
+  const codeownersRules = loadCodeownersRules();
   const pr = viewPr(repository, prNumber);
 
   const skip = skipPrReason(pr);
@@ -154,7 +238,12 @@ function main() {
     record([`Review request: skipped — ${skip}`]);
     return;
   }
-  if (alreadyCovered(policy, pr)) {
+  // Owners that GitHub's automatic CODEOWNERS handling already requests for
+  // these paths: they are never picked (that would only duplicate CODEOWNERS)
+  // and never count as coverage (this routing has not happened yet), so the
+  // targeted request still fires on top of the auto-requests.
+  const codeOwners = codeownersForFiles(codeownersRules, pr.files);
+  if (alreadyCovered(policy, pr, codeOwners)) {
     record(['Review request: skipped — a mapped owner is already reviewing']);
     return;
   }
@@ -165,10 +254,12 @@ function main() {
     return;
   }
 
-  // Never request the PR author to review their own work.
+  // Never request the PR author to review their own work, and never pick an
+  // owner CODEOWNERS already requested for these paths.
   const eligible = area.owners.filter(
     (owner) =>
       owner.toLowerCase() !== pr.author.login.toLowerCase() &&
+      !codeOwners.has(owner.toLowerCase()) &&
       canWrite(repository, owner),
   );
   if (eligible.length === 0) {
@@ -200,7 +291,8 @@ function main() {
     record([`Review request: skipped — ${latestSkip}`]);
     return;
   }
-  if (alreadyCovered(policy, latestPr)) {
+  const latestCodeOwners = codeownersForFiles(codeownersRules, latestPr.files);
+  if (alreadyCovered(policy, latestPr, latestCodeOwners)) {
     record(['Review request: skipped — a mapped owner is already reviewing']);
     return;
   }

@@ -21,7 +21,9 @@ import { loadPolicy } from './assign-issue-owner.mjs';
 import {
   alreadyCovered,
   allOwners,
+  codeownersForFiles,
   matchAreaByPath,
+  parseCodeowners,
   skipPrReason,
 } from './assign-pr-reviewer.mjs';
 
@@ -43,6 +45,13 @@ const corePr = {
   reviewRequests: [],
   latestReviews: [],
 };
+// The checked-in CODEOWNERS owners for the changed paths: GitHub requests all
+// of them automatically the second a PR opens, so the routing must exclude
+// them from both the coverage pool and the pick.
+const repoCodeownersRules = parseCodeowners(
+  readFileSync(join(repoRoot, '.github', 'CODEOWNERS'), 'utf8'),
+);
+const coreCodeOwners = codeownersForFiles(repoCodeownersRules, corePr.files);
 
 afterEach(() => {
   while (tempDirs.length > 0) {
@@ -148,6 +157,59 @@ describe('assign-pr-reviewer: path matching', () => {
   });
 });
 
+describe('assign-pr-reviewer: CODEOWNERS matching', () => {
+  const rules = parseCodeowners(
+    [
+      '# header comment',
+      '',
+      '/packages/core/ @alice @bob',
+      'packages/core/src/special.ts @carol',
+      'docs/ @org/docs-team dave@example.com',
+      'docs/*.txt @doc-txt',
+      '*.md @erin',
+      'generated/ @gen-owner',
+    ].join('\n'),
+  );
+
+  function ownersFor(path) {
+    return [...codeownersForFiles(rules, [{ path }])].sort();
+  }
+
+  it('drops team and email owners, keeping nothing requestable', () => {
+    // Only the directory rule reaches nested files, and both of its owners
+    // are a team and an email address.
+    assert.deepEqual(ownersFor('docs/sub/guide.txt'), []);
+  });
+
+  it('never lets a single * cross a directory separator', () => {
+    assert.deepEqual(ownersFor('docs/guide.txt'), ['doc-txt']);
+  });
+
+  it('applies the last matching rule per file', () => {
+    assert.deepEqual(ownersFor('packages/core/src/foo.ts'), ['alice', 'bob']);
+    assert.deepEqual(ownersFor('packages/core/src/special.ts'), ['carol']);
+  });
+
+  it('anchors slashed patterns and floats bare directories', () => {
+    assert.deepEqual(ownersFor('vendor/packages/core/foo.ts'), []);
+    assert.deepEqual(ownersFor('deep/generated/file.js'), ['gen-owner']);
+  });
+
+  it('excludes the CODEOWNERS owners of the mapped core paths', () => {
+    assert.ok(
+      coreCodeOwners.size > 0,
+      'expected packages/core/ to have CODEOWNERS entries',
+    );
+    assert.deepEqual([...coreCodeOwners].sort(), [
+      'doudououc',
+      'lazzyman',
+      'tanzhenxin',
+      'wenshao',
+      'yiliang114',
+    ]);
+  });
+});
+
 describe('assign-pr-reviewer: idempotency', () => {
   it('collects every mapped owner into the coverage pool', () => {
     const pool = allOwners(policy);
@@ -155,23 +217,48 @@ describe('assign-pr-reviewer: idempotency', () => {
     assert.ok(pool.length >= policy.areas[0].owners.length);
   });
 
-  it('treats a pending request for any mapped owner as covered', () => {
-    const owner = policy.areas[0].owners[0];
-    assert.ok(
-      alreadyCovered(policy, {
-        ...corePr,
-        reviewRequests: [{ login: owner }],
-      }),
+  it('does not treat CODEOWNERS auto-requests as coverage', () => {
+    // GitHub requests every code owner for packages/core/ the second the PR
+    // opens; that must not suppress this routing's targeted request.
+    assert.equal(
+      alreadyCovered(
+        policy,
+        {
+          ...corePr,
+          reviewRequests: [...coreCodeOwners].map((login) => ({ login })),
+        },
+        coreCodeOwners,
+      ),
+      false,
     );
   });
 
-  it('treats a submitted review by any mapped owner as covered', () => {
-    const owner = policy.areas[0].owners[0];
+  it('treats a pending request for any other mapped owner as covered', () => {
+    const owner = policy.areas[0].owners.find(
+      (login) => !coreCodeOwners.has(login.toLowerCase()),
+    );
     assert.ok(
-      alreadyCovered(policy, {
-        ...corePr,
-        latestReviews: [{ author: { login: owner }, state: 'COMMENTED' }],
-      }),
+      alreadyCovered(
+        policy,
+        { ...corePr, reviewRequests: [{ login: owner }] },
+        coreCodeOwners,
+      ),
+    );
+  });
+
+  it('treats a submitted review by any other mapped owner as covered', () => {
+    const owner = policy.areas[0].owners.find(
+      (login) => !coreCodeOwners.has(login.toLowerCase()),
+    );
+    assert.ok(
+      alreadyCovered(
+        policy,
+        {
+          ...corePr,
+          latestReviews: [{ author: { login: owner }, state: 'COMMENTED' }],
+        },
+        coreCodeOwners,
+      ),
     );
   });
 
@@ -189,12 +276,19 @@ describe('assign-pr-reviewer: idempotency', () => {
   });
 });
 
-// The stub reports wenshao as the least loaded owner so the pick is
-// unambiguous regardless of the rotation offset for PR 77. Changed files come
-// from the paginated REST files endpoint, not from `pr view`, so the stub
-// serves them separately and can vary them between the two reads.
+// The stub reports DennisYu07 as the least loaded owner so the pick is
+// unambiguous regardless of the rotation offset for PR 77 (DennisYu07 is also
+// not a CODEOWNERS owner for packages/core/, so the exclusion never drops
+// it). Changed files come from the paginated REST files endpoint, not from
+// `pr view`, so the stub serves them separately and can vary them between the
+// two reads.
 function runRequest(dryRun, options = {}) {
-  const { firstPrJson = '', secondPrJson = '', secondFiles = '' } = options;
+  const {
+    firstPrJson = '',
+    secondPrJson = '',
+    secondFiles = '',
+    zeroLoadOwner = 'DennisYu07',
+  } = options;
   const dir = mkdtempSync(join(tmpdir(), 'assign-pr-reviewer-'));
   tempDirs.push(dir);
   const log = join(dir, 'gh.log');
@@ -227,7 +321,7 @@ case "$*" in
     fi
     ;;
   *"/collaborators/"*"/permission"*) printf '%s' 'write' ;;
-  *"--assignee wenshao"*"--json number"*) printf '%s' '0' ;;
+  *"--assignee ${zeroLoadOwner}"*"--json number"*) printf '%s' '0' ;;
   *"issue list"*"--json number"*) printf '%s' '5' ;;
 esac
 `,
@@ -269,25 +363,52 @@ describe('assign-pr-reviewer: apply boundary', () => {
 
   it('verifies push access before requesting', () => {
     const { log } = runRequest(false);
-    assert.match(log, /collaborators\/wenshao\/permission/);
+    assert.match(log, /collaborators\/DennisYu07\/permission/);
   });
 
   it('performs no mutation in dry-run mode', () => {
     const { log, stdout } = runRequest(true);
     assert.doesNotMatch(log, /pr edit/);
-    assert.match(stdout, /dry-run — would request @wenshao/);
+    assert.match(stdout, /dry-run — would request @DennisYu07/);
   });
 
   it('requests the least loaded eligible owner', () => {
     const { log, stdout } = runRequest(false);
-    assert.match(log, /pr edit 77 .*--add-reviewer wenshao/);
-    assert.match(stdout, /requested @wenshao/);
+    assert.match(log, /pr edit 77 .*--add-reviewer DennisYu07/);
+    assert.match(stdout, /requested @DennisYu07/);
+  });
+
+  it('requests on top of CODEOWNERS auto-requests', () => {
+    // Every code owner for packages/core/ is already requested by GitHub's
+    // automatic CODEOWNERS handling; the routing must still add one of the
+    // remaining mapped owners, never a duplicate of them.
+    const withCodeownerRequests = JSON.stringify({
+      state: 'OPEN',
+      isDraft: false,
+      author: { login: 'some-contributor' },
+      reviewRequests: [...coreCodeOwners].map((login) => ({ login })),
+      latestReviews: [],
+    });
+    // zeroLoadOwner=wenshao makes a code owner the least-loaded candidate, so
+    // the assertion proves the exclusion keeps it out of the pick, not just
+    // lucky rotation.
+    const { log, stdout } = runRequest(false, {
+      firstPrJson: withCodeownerRequests,
+      secondPrJson: withCodeownerRequests,
+      zeroLoadOwner: 'wenshao',
+    });
+    assert.match(log, /pr edit 77 .*--add-reviewer pomelo-nwu/);
+    assert.match(stdout, /requested @pomelo-nwu/);
+    assert.doesNotMatch(
+      log,
+      /--add-reviewer (wenshao|tanzhenxin|yiliang114|LaZzyMan|doudouOUC)\b/,
+    );
   });
 
   it('re-checks coverage immediately before requesting', () => {
     const { log, stdout } = runRequest(false, {
       secondPrJson:
-        '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"reviewRequests":[{"login":"wenshao"}],"latestReviews":[]}',
+        '{"state":"OPEN","isDraft":false,"author":{"login":"some-contributor"},"reviewRequests":[{"login":"pomelo-nwu"}],"latestReviews":[]}',
     });
     assert.doesNotMatch(log, /pr edit/);
     assert.match(stdout, /already reviewing/);
@@ -333,6 +454,13 @@ describe('assign-pr-reviewer: workflow invariants', () => {
       issues: 'read',
       'pull-requests': 'write',
     });
+  });
+
+  it('checks out CODEOWNERS so the routing can exclude auto-requested owners', () => {
+    assert.match(
+      checkoutStep.with['sparse-checkout'],
+      /^\.github\/CODEOWNERS$/m,
+    );
   });
 
   it('scopes the write token to the step and keeps checkout credential-free', () => {

@@ -7,13 +7,15 @@ name: 'Assign PR reviewer'
 # this workflow and the script never reads PR title, body, or comments, so
 # untrusted PR text cannot select a reviewer. Push access is re-verified
 # against the collaborator API before every write. At most one owner is
-# requested per PR; if a mapped owner is already a requested reviewer or has
-# reviewed, the run no-ops. Fork PRs run with a read-only GITHUB_TOKEN and are
-# skipped gracefully — CODEOWNERS still covers them.
+# requested per PR; owners CODEOWNERS already requests for the changed paths
+# are excluded, and if any remaining mapped owner is already a requested
+# reviewer or has reviewed, the run no-ops. Fork PRs run with a read-only
+# GITHUB_TOKEN and are skipped gracefully — CODEOWNERS still covers them.
 #
 # This complements CODEOWNERS rather than replacing it: the merge gate keeps
 # requesting every code owner, while this workflow surfaces the single most
-# relevant owner for day-to-day review attention.
+# relevant owner for day-to-day review attention on top of those
+# auto-requests.
 
 on:
   pull_request:
@@ -51,6 +53,7 @@ jobs:
         uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           sparse-checkout: |-
+            .github/CODEOWNERS
             .github/issue-owners.json
             .github/scripts/assign-issue-owner.mjs
             .github/scripts/assign-pr-reviewer.mjs
