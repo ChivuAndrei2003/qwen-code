@@ -70,4 +70,9 @@ jobs:
           GH_TOKEN: '${{ github.token }}'
           PR_NUMBER: '${{ github.event.pull_request.number || inputs.number }}'
           DRY_RUN: "${{ inputs.dry_run || 'false' }}"
-        run: 'node .github/scripts/assign-pr-reviewer.mjs'
+        run: |-
+          if [ ! -f .github/scripts/assign-pr-reviewer.mjs ]; then
+            echo 'Review request: skipped — trusted base does not contain assign-pr-reviewer.mjs yet'
+            exit 0
+          fi
+          node .github/scripts/assign-pr-reviewer.mjs

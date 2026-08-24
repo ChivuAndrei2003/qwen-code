@@ -544,6 +544,13 @@ describe('assign-pr-reviewer: workflow invariants', () => {
     assert.equal(checkoutStep.with['persist-credentials'], false);
   });
 
+  it('skips bootstrap runs until the trusted base contains the script', () => {
+    assert.match(
+      requestStep.run,
+      /trusted base does not contain assign-pr-reviewer\.mjs yet/,
+    );
+  });
+
   it('defaults manual dispatches to report-only', () => {
     // The DRY_RUN step env consumes inputs.dry_run; if the input definition
     // flips or disappears, `inputs.dry_run || 'false'` collapses to 'false'

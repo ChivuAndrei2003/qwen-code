@@ -314,7 +314,11 @@ function main() {
   } catch (error) {
     // Fork PRs run this workflow with a read-only GITHUB_TOKEN, so the write
     // 403s. That is expected, not a failure — CODEOWNERS still covers forks.
-    if (/permission|403/i.test(error.message)) {
+    if (
+      /permission|403|resource not accessible by integration/i.test(
+        error.message,
+      )
+    ) {
       record([
         `Review request: skipped — token cannot request reviewers (fork PR?)`,
       ]);
