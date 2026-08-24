@@ -545,6 +545,10 @@ describe('assign-pr-reviewer: workflow invariants', () => {
   });
 
   it('skips bootstrap runs until the trusted base contains the script', () => {
+    assert.equal(
+      checkoutStep.with.ref,
+      '${{ github.event.pull_request.base.sha || github.sha }}',
+    );
     assert.match(
       requestStep.run,
       /trusted base does not contain assign-pr-reviewer\.mjs yet/,
